@@ -31,6 +31,23 @@ sleep 2
 # 2. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ==============================================================================
 
+# Все вызовы wp-cli выполняются от www-data (uid 33), а не от root.
+# Каждый вызов wp поднимает WordPress со всеми плагинами — плагины создают свои
+# файлы (маркер redis, кэши Autoptimize/wpDiscuz, каталог месяца в uploads).
+# Сделанные от root, они уходят под root:root уже ПОСЛЕ зоны «I. Финальные права»
+# (финальный блок nginx-helper/redis в конце скрипта) и PHP-FPM (www-data) теряет
+# к ним доступ — отсюда уведомления плагинов («не могу записать в каталог кэша»).
+# --allow-root в существующих вызовах остаётся: для не-root пользователя он безвреден.
+# HOME/WP_CLI_CACHE_DIR — в /tmp, как у wp-cron sidecar (uid 33 без домашней директории).
+WP_BIN="/usr/local/bin/wp"
+wp() {
+    if [ "$(id -u)" = "0" ]; then
+        runuser -u www-data -- env HOME=/tmp WP_CLI_CACHE_DIR=/tmp/wp-cli-cache "$WP_BIN" "$@"
+    else
+        env HOME=/tmp WP_CLI_CACHE_DIR=/tmp/wp-cli-cache "$WP_BIN" "$@"
+    fi
+}
+
 # Функция FORCE (для констант типа true/false/чисел). Перезаписывает.
 set_config_force() {
     KEY=$1; VALUE=$2
@@ -305,8 +322,10 @@ if wp core is-installed --allow-root --path=/var/www/html >/dev/null 2>&1; then
     wp plugin activate nginx-helper redis-cache --allow-root --path=/var/www/html || true
     wp redis enable --allow-root --path=/var/www/html || true
     # Формат кэша изменился (igbinary + lz4): старые записи в Redis нечитаемы — один раз сбрасываем.
+    # Маркер создаём тоже от www-data — блок идёт ПОСЛЕ зоны «I. Финальные права»,
+    # touch от root оставил бы root-файл в docroot (см. комментарий к функции wp выше).
     if [ ! -f /var/www/html/.redis_format_igbinary_lz4 ]; then
-        wp cache flush --allow-root --path=/var/www/html && touch /var/www/html/.redis_format_igbinary_lz4 || true
+        wp cache flush --allow-root --path=/var/www/html && runuser -u www-data -- touch /var/www/html/.redis_format_igbinary_lz4 || true
     fi
     wp option update rt_wp_nginx_helper_options '{"enable_purge":"1","enable_map":"0","enable_log":"0","log_level":"INFO","log_filesize":"5","enable_stamp":"0","purge_homepage_on_edit":"1","purge_homepage_on_del":"1","purge_archive_on_edit":"1","purge_archive_on_del":"1","purge_archive_on_new_comment":"0","purge_archive_on_deleted_comment":"0","purge_page_on_mod":"1","purge_page_on_new_comment":"1","purge_page_on_deleted_comment":"1","purge_method":"unlink_files"}' --format=json --allow-root --path=/var/www/html || true
 else
