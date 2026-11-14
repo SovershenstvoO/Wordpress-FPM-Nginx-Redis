@@ -52,6 +52,10 @@ services:
   wp-cron:
     build: .
     container_name: ${CRON_CONTAINER_NAME:-wp_cron_worker}
+    # Без docker-healthcheck (фоновый воркер). exclude_from_hc: не участвовать в агрегате
+    # статуса приложения — иначе его running:unknown показывает «Running (no healthcheck)»
+    # для всего стека, хотя все остальные контейнеры healthy (механика Coolify 4.7.5)
+    exclude_from_hc: true
     restart: unless-stopped
     volumes:
       # Подключаем те же файлы, чтобы WP-CLI видел код сайта и wp-config.php
